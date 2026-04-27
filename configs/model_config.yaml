@@ -1,0 +1,63 @@
+# ── Model Training Configuration ──────────────────────────────────────────────
+
+occupancy_transformer:
+  # Architecture
+  sensor_feature_dim: 8
+  time_feature_dim: 4
+  seq_len: 24           # 24 × 5-min steps = 2h input window
+  d_model: 128
+  n_heads: 8
+  n_layers: 6
+  d_ff: 512
+  dropout: 0.1
+  n_domain_tokens: 16
+  n_horizons: 3         # Predict at 5, 15, 30 min
+
+  # Training
+  batch_size: 128
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  patience: 15          # Early stopping patience
+  grad_clip: 1.0
+  scheduler: cosine_annealing
+
+  # Data
+  train_split: 0.7
+  val_split: 0.1
+  test_split: 0.2
+  positive_weight: 1.5  # Class weight for occupied (handle imbalance)
+
+  # Domain adaptation
+  pretrain_epochs: 30   # Epochs on ASHRAE before fine-tuning
+  finetune_lr: 3.0e-5
+  frozen_layers: 3      # Freeze first N encoder layers during fine-tuning
+
+hvac_forecaster:
+  hidden_size: 256
+  num_layers: 3
+  dropout: 0.2
+  bidirectional: true
+  horizons_minutes: [15, 30, 60]
+  batch_size: 64
+  learning_rate: 1.0e-3
+  epochs: 80
+  patience: 12
+
+anomaly_detection:
+  isolation_forest:
+    n_estimators: 200
+    contamination: 0.02
+    max_samples: auto
+
+  lstm_autoencoder:
+    encoding_dim: 32
+    seq_len: 12
+    batch_size: 64
+    learning_rate: 5.0e-4
+    epochs: 60
+    reconstruction_threshold_percentile: 97
+
+  ensemble:
+    weights: [0.35, 0.45, 0.20]   # IsoForest, LSTM-AE, Z-score
+    alert_threshold: 0.65

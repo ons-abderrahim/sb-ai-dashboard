@@ -1,0 +1,122 @@
+version: "3.9"
+
+services:
+  # ── Time-Series Database ──────────────────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: sb_influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD:-adminpassword}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-smartbuilding}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-sensors}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN:-dev-token-replace-in-prod}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Relational / Metadata DB ──────────────────────────────────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: sb_timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sbuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sbpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-smartbuilding}
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./scripts/setup_db.sh:/docker-entrypoint-initdb.d/setup_db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sbuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sb_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-influxdb-flux-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  # ── FastAPI Backend ───────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: sb_api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      INFLUXDB_URL: http://influxdb:8086
+      TIMESCALE_URL: postgresql+asyncpg://${POSTGRES_USER:-sbuser}:${POSTGRES_PASSWORD:-sbpassword}@timescaledb:5432/${POSTGRES_DB:-smartbuilding}
+    volumes:
+      - ./src:/app/src
+      - model_artifacts:/app/models
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Plotly Dash Dashboard ─────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: sb_dashboard
+    ports:
+      - "8050:8050"
+    env_file: .env
+    environment:
+      API_URL: http://api:8000
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      - api
+    command: python src/dashboard/app.py
+
+  # ── Background Worker (model inference + anomaly detection) ───────────────
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: sb_worker
+    env_file: .env
+    environment:
+      INFLUXDB_URL: http://influxdb:8086
+      TIMESCALE_URL: postgresql+asyncpg://${POSTGRES_USER:-sbuser}:${POSTGRES_PASSWORD:-sbpassword}@timescaledb:5432/${POSTGRES_DB:-smartbuilding}
+    volumes:
+      - ./src:/app/src
+      - model_artifacts:/app/models
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+volumes:
+  influxdb_data:
+  timescale_data:
+  grafana_data:
+  model_artifacts:
